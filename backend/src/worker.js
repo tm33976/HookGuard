@@ -2,24 +2,31 @@ require('dotenv').config();
 const { Worker } = require('bullmq');
 const mongoose = require('mongoose');
 const axios = require('axios');
-const crypto = require('crypto'); 
-const Redis = require('ioredis');
+const crypto = require('crypto');
 
-// FIX: Changed '../' to './' because this file is in 'src/'
-const connectDB = require('./config/db');
-const redisConfig = require('./config/redis');
+// ✅ FIX: Import the shared connection instance correctly
+const { connection } = require('./config/redis');
+
+// Models
 const Task = require('./models/Task');
 const TaskAttempt = require('./models/TaskAttempt');
 
-// 1. Connect Services
-connectDB();
-const redisClient = new Redis(redisConfig.connection);
+// Connect to MongoDB
+if (process.env.MONGO_URI) {
+    mongoose.connect(process.env.MONGO_URI)
+        .then(() => console.log('✅ Worker connected to MongoDB'))
+        .catch(err => console.error('❌ Worker MongoDB Error:', err));
+}
 
 console.log('🚀 Worker Service Started (v2.0 - Secure & Rate Limited)...');
+
+// ✅ FIX: Reuse the shared connection for Rate Limiting (Avoids new connection timeout)
+const redisClient = connection;
 
 const worker = new Worker('webhook-queue', async (job) => {
     const { taskId } = job.data;
     
+    // Fetch Task + Secret (Explicitly selected)
     const task = await Task.findById(taskId).select('+security.secret');
     
     if (!task) {
@@ -38,19 +45,24 @@ const worker = new Worker('webhook-queue', async (job) => {
             const hostname = url.hostname;
             const rateKey = `rate_limit:${hostname}`;
 
+            // Increment counter
             const currentUsage = await redisClient.incr(rateKey);
             
+            // If new key, set expiry window (60s)
             if (currentUsage === 1) {
                 await redisClient.expire(rateKey, 60);
             }
 
+            // Check Limit
             if (currentUsage > task.rateLimitConfig.maxPerMinute) {
                 console.warn(`[Job ${job.id}] ⚠️ Throttled: ${hostname} (${currentUsage}/60). Rescheduling...`);
-              await job.moveToDelayed(Date.now() + 30000, job.token);
+                // Move to delayed set (30s penalty)
+                await job.moveToDelayed(Date.now() + 30000, job.token);
                 return; 
             }
         } catch (err) {
             console.error('Rate Limit Check Failed:', err.message);
+            // Continue execution even if Redis fails (Fail Open)
         }
     }
 
@@ -69,7 +81,7 @@ const worker = new Worker('webhook-queue', async (job) => {
             .update(payloadString)
             .digest('hex');
         
-        headers[task.security.signatureHeader] = `sha256=${signature}`;
+        headers[task.security.signatureHeader || 'X-Hub-Signature-256'] = `sha256=${signature}`;
         console.log(`[Job ${job.id}] 🔐 Signed Request with HMAC-SHA256`);
     }
 
@@ -116,7 +128,7 @@ const worker = new Worker('webhook-queue', async (job) => {
         });
 
         // =================================================================
-        // 📨 FEATURE 3: DELIVERY MODES
+        // 📨 FEATURE 3: DELIVERY MODES & RETRY LOGIC
         // =================================================================
         
         if (task.deliveryMode === 'best_effort') {
@@ -136,20 +148,21 @@ const worker = new Worker('webhook-queue', async (job) => {
                 nextRunAt: new Date(Date.now() + delay)
             });
 
-            await job.moveToDelayed(Date.now() + delay);
-            throw new Error(`Retry scheduled in ${delay}ms`);
+            console.log(`[Job ${job.id}] 🔄 Retry scheduled in ${delay}ms`);
+            await job.moveToDelayed(Date.now() + delay, job.token);
+            // We do NOT throw error here because we handled the move manually
         } else {
             await task.updateOne({ status: 'FAILED' });
             console.log(`[Job ${job.id}] 💀 Max attempts reached.`);
         }
     }
 }, {
-    connection: redisConfig.connection,
+    connection: connection, // ✅ FIX: Use the shared, secure, IPv4 connection
     concurrency: 5
 });
 
 worker.on('failed', (job, err) => {
-    console.log(`[Job ${job.id}] moved to failed: ${err.message}`);
+    console.log(`[Job ${job.id || 'unknown'}] moved to failed: ${err.message}`);
 });
 
 worker.on('error', (err) => {
