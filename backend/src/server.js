@@ -1,10 +1,16 @@
+// ⚠️ GLOBAL FIX: Force Node.js to use IPv4 first (Fixes Render ETIMEDOUT)
+const dns = require('dns');
+dns.setDefaultResultOrder('ipv4first');
+
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const { Queue } = require('bullmq');
 const connectDB = require('./config/db');
 const webhookRoutes = require('./routes/webhookRoutes');
-const { connection } = require('./config/redis'); // Import shared Redis connection
+
+// ✅ FIX: Import the config object (not the connection instance)
+const redisConfig = require('./config/redis'); 
 
 const app = express();
 
@@ -19,9 +25,10 @@ app.use(express.urlencoded({ limit: '10mb', extended: true }));
 // Database Connection
 connectDB();
 
-// Initialize Queue with Shared Connection
+// Initialize Queue with Config Object
+// BullMQ will now create its own managed connection using the IPv4 settings
 const myQueue = new Queue('webhook-queue', {
-    connection: connection
+    connection: redisConfig 
 });
 
 // Routes

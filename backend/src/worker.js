@@ -1,11 +1,16 @@
+// ⚠️ GLOBAL FIX: Force Node.js to use IPv4 first (Fixes Render ETIMEDOUT)
+const dns = require('dns');
+dns.setDefaultResultOrder('ipv4first');
+
 require('dotenv').config();
 const { Worker } = require('bullmq');
 const mongoose = require('mongoose');
 const axios = require('axios');
 const crypto = require('crypto');
+const IORedis = require('ioredis');
 
-// ✅ FIX: Import the shared connection instance correctly
-const { connection } = require('./config/redis');
+// ✅ FIX: Import the config object (not the connection instance)
+const redisConfig = require('./config/redis');
 
 // Models
 const Task = require('./models/Task');
@@ -20,13 +25,13 @@ if (process.env.MONGO_URI) {
 
 console.log('🚀 Worker Service Started (v2.0 - Secure & Rate Limited)...');
 
-// ✅ FIX: Reuse the shared connection for Rate Limiting (Avoids new connection timeout)
-const redisClient = connection;
+// ✅ FIX: Create a dedicated Redis client for Rate Limiting using the shared config
+const redisClient = new IORedis(redisConfig);
 
 const worker = new Worker('webhook-queue', async (job) => {
     const { taskId } = job.data;
     
-    // Fetch Task + Secret (Explicitly selected)
+    // Fetch Task + Secret
     const task = await Task.findById(taskId).select('+security.secret');
     
     if (!task) {
@@ -45,24 +50,19 @@ const worker = new Worker('webhook-queue', async (job) => {
             const hostname = url.hostname;
             const rateKey = `rate_limit:${hostname}`;
 
-            // Increment counter
             const currentUsage = await redisClient.incr(rateKey);
             
-            // If new key, set expiry window (60s)
             if (currentUsage === 1) {
                 await redisClient.expire(rateKey, 60);
             }
 
-            // Check Limit
             if (currentUsage > task.rateLimitConfig.maxPerMinute) {
                 console.warn(`[Job ${job.id}] ⚠️ Throttled: ${hostname} (${currentUsage}/60). Rescheduling...`);
-                // Move to delayed set (30s penalty)
                 await job.moveToDelayed(Date.now() + 30000, job.token);
                 return; 
             }
         } catch (err) {
             console.error('Rate Limit Check Failed:', err.message);
-            // Continue execution even if Redis fails (Fail Open)
         }
     }
 
@@ -150,14 +150,13 @@ const worker = new Worker('webhook-queue', async (job) => {
 
             console.log(`[Job ${job.id}] 🔄 Retry scheduled in ${delay}ms`);
             await job.moveToDelayed(Date.now() + delay, job.token);
-            // We do NOT throw error here because we handled the move manually
         } else {
             await task.updateOne({ status: 'FAILED' });
             console.log(`[Job ${job.id}] 💀 Max attempts reached.`);
         }
     }
 }, {
-    connection: connection, // ✅ FIX: Use the shared, secure, IPv4 connection
+    connection: redisConfig, // ✅ FIX: Use the shared config object
     concurrency: 5
 });
 
