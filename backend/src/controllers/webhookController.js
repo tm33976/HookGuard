@@ -1,35 +1,55 @@
 const Task = require('../models/Task');
 const { Queue } = require('bullmq');
+// ✅ FIX 1: Import the config object
 const redisConfig = require('../config/redis');
 
+// ✅ FIX 2: Pass the config object directly (removes .connection)
+const webhookQueue = new Queue('webhook-queue', { 
+    connection: redisConfig 
+});
 
-const webhookQueue = new Queue('webhook-queue', { connection: redisConfig.connection });
-
-//INGEST WEBHOOK
+// INGEST WEBHOOK
 exports.ingestWebhook = async (req, res) => {
   try {
-    const { targetUrl, payload, idempotencyKey, secret, deliveryMode } = req.body;
+    // ✅ FIX 3: Destructure all fields (including retry/rateLimit)
+    const { 
+        targetUrl, 
+        payload, 
+        idempotencyKey, 
+        security,          // Expecting whole object: { secret: "..." }
+        deliveryMode,
+        retryConfig,       // Don't lose this!
+        rateLimitConfig    // Don't lose this!
+    } = req.body;
 
-    const existingTask = await Task.findOne({ idempotencyKey });
-    if (existingTask) {
-      return res.status(409).json({ 
-        error: 'Conflict: Task already exists', 
-        taskId: existingTask._id, 
-        status: existingTask.status 
-      });
+    // Idempotency Check
+    if (idempotencyKey) {
+        const existingTask = await Task.findOne({ idempotencyKey });
+        if (existingTask) {
+          return res.status(409).json({ 
+            error: 'Conflict: Task already exists', 
+            taskId: existingTask._id, 
+            status: existingTask.status 
+          });
+        }
     }
 
+    // Create Task in DB
     const task = await Task.create({
       targetUrl,
       payload,
       idempotencyKey,
-      security: secret ? { secret } : undefined,
-      deliveryMode: deliveryMode || 'at_least_once'
+      security,        // Save the security object as-is
+      deliveryMode: deliveryMode || 'at_least_once',
+      retryConfig,     // ✅ Save retry settings
+      rateLimitConfig, // ✅ Save rate limit settings
+      status: 'PENDING'
     });
 
+    // Add to Queue
     await webhookQueue.add('process-webhook', { taskId: task._id }, {
       removeOnComplete: true,
-      removeOnFail: true
+      removeOnFail: 100 // Keep last 100 failed jobs for debugging
     });
 
     res.status(202).json({
@@ -38,13 +58,14 @@ exports.ingestWebhook = async (req, res) => {
       status: 'PENDING',
       message: 'Webhook received and queued.'
     });
+
   } catch (error) {
     console.error('Ingest Error:', error);
     res.status(500).json({ error: 'Internal Server Error' });
   }
 };
 
-//GET TASKS
+// GET TASKS
 exports.getTasks = async (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 20;
@@ -56,7 +77,7 @@ exports.getTasks = async (req, res) => {
   }
 };
 
-// RETRY TASK (Updated Logic)
+// RETRY TASK
 exports.retryTask = async (req, res) => {
   try {
     const { id } = req.params;
@@ -66,15 +87,18 @@ exports.retryTask = async (req, res) => {
       return res.status(404).json({ error: 'Task not found' });
     }
 
-   
+    // Reset task state for a fresh attempt
     await task.updateOne({ 
       status: 'PENDING', 
       currentAttempt: 0, 
       errorMessage: null,
       nextRunAt: null,
-      deliveryMode: 'at_least_once'
+      // We don't force 'at_least_once' here incase it was 'best_effort', 
+      // but usually retries imply we want it to work now.
+      status: 'PENDING' 
     });
 
+    // Re-add to queue
     await webhookQueue.add('process-webhook', { taskId: task._id });
 
     res.json({ success: true, message: 'Task queued for retry' });
