@@ -39,11 +39,11 @@ app.use('/api/v1', webhookRoutes);
 // Health Check
 app.get('/health', (req, res) => res.status(200).json({ status: 'OK' }));
 
-// ✅ UPDATED: Keep-Alive logic using Environment Variable
+//  UPDATED: Keep-Alive logic using Environment Variable
 const PING_INTERVAL = 14 * 60 * 1000; 
 
 function keepAlive() {
-  // Uses the URL from your environment variables
+  // Uses the URL from our environment variables
   const selfUrl = `${process.env.BACKEND_URL}/health`;
 
   setInterval(async () => {
