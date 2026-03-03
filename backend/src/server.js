@@ -14,8 +14,14 @@ const app = express();
 
 app.set('trust proxy', 1);
 
-// Middleware
-app.use(cors({ origin: '*' }));
+// UPDATED: Dynamic CORS (Restricts access to your frontend only)
+const allowedOrigin = process.env.FRONTEND_URL || '*';
+app.use(cors({ 
+  origin: allowedOrigin,
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  credentials: true
+}));
+
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ limit: '10mb', extended: true }));
 
@@ -33,16 +39,17 @@ app.use('/api/v1', webhookRoutes);
 // Health Check
 app.get('/health', (req, res) => res.status(200).json({ status: 'OK' }));
 
-//  KEEP ALIVE LOGIC FOR RENDER FREE TIER 
-const PING_INTERVAL = 14 * 60 * 1000; // 14 minutes
-// Use the health check or tasks endpoint
-const SELF_URL = `https://hookguard-558f.onrender.com/health`; 
+// ✅ UPDATED: Keep-Alive logic using Environment Variable
+const PING_INTERVAL = 14 * 60 * 1000; 
 
 function keepAlive() {
+  // Uses the URL from your environment variables
+  const selfUrl = `${process.env.BACKEND_URL}/health`;
+
   setInterval(async () => {
     try {
-      console.log('📡 Keep-Alive: Pinging self to prevent Render sleep...');
-      const response = await axios.get(SELF_URL);
+      console.log('📡 Keep-Alive: Pinging self...');
+      const response = await axios.get(selfUrl);
       console.log(`✅ Keep-Alive Status: ${response.status}`);
     } catch (error) {
       console.error('⚠️ Keep-Alive Failed:', error.message);
@@ -55,8 +62,8 @@ const PORT = process.env.PORT || 5000;
 const server = app.listen(PORT, () => {
   console.log(`🚀 API Server running on port ${PORT}`);
   
-  // ✅ Trigger Keep-Alive only in production
-  if (process.env.NODE_ENV === 'production') {
+  // Only ping if the URL is provided and we are in production
+  if (process.env.NODE_ENV === 'production' && process.env.BACKEND_URL) {
     keepAlive();
   }
 });
