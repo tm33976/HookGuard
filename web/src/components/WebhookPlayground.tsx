@@ -1,15 +1,16 @@
 "use client";
 
 import { useState } from "react";
-import { Send, Lock, Zap, RefreshCw, CheckCircle, AlertCircle } from "lucide-react";
+import { Send, Lock, Zap, RefreshCw, CheckCircle, AlertCircle, Key } from "lucide-react";
 
 export default function WebhookPlayground({ onWebhookSent }: { onWebhookSent: () => void }) {
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<'idle' | 'success' | 'error'>('idle');
   
-  // Default Form State
+  // Form State
   const [targetUrl, setTargetUrl] = useState("https://jsonplaceholder.typicode.com/posts");
   const [secret, setSecret] = useState("");
+  const [idempotencyKey, setIdempotencyKey] = useState("");
   const [deliveryMode, setDeliveryMode] = useState("at_least_once");
   const [payload, setPayload] = useState('{\n  "event": "user_signup",\n  "user_id": 12345\n}');
 
@@ -18,8 +19,10 @@ export default function WebhookPlayground({ onWebhookSent }: { onWebhookSent: ()
     setStatus('idle');
 
     try {
-      // Generate unique key so every click works
-      const uniqueKey = `test-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+      // Use user-defined idempotency key if provided; otherwise fallback to dynamic timestamp
+      const effectiveKey = idempotencyKey.trim() !== "" 
+        ? idempotencyKey.trim() 
+        : `test-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
 
       // Validate JSON
       let parsedPayload;
@@ -31,8 +34,6 @@ export default function WebhookPlayground({ onWebhookSent }: { onWebhookSent: ()
         return;
       }
 
-      // ✅ FIX: Use Environment Variable for Vercel Deployment
-      // This ensures it hits your Render Backend, not localhost
       const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:5000";
 
       // Send Request
@@ -44,7 +45,7 @@ export default function WebhookPlayground({ onWebhookSent }: { onWebhookSent: ()
           secret: secret || undefined,
           deliveryMode,
           payload: parsedPayload,
-          idempotencyKey: uniqueKey
+          idempotencyKey: effectiveKey
         })
       });
 
@@ -78,16 +79,30 @@ export default function WebhookPlayground({ onWebhookSent }: { onWebhookSent: ()
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
         {/* LEFT COL: Configuration */}
-        <div className="space-y-5">
+        <div className="space-y-4">
             <div>
                 <label className="block text-xs font-semibold text-gray-500 uppercase mb-1.5 tracking-wider">Target URL</label>
                 <input 
                     type="text" 
-                    value={targetUrl}
+                    value={targetUrl} 
                     onChange={(e) => setTargetUrl(e.target.value)}
                     className="w-full text-sm p-2.5 border border-gray-200 rounded-lg font-mono text-gray-700 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
                     placeholder="https://api.example.com/webhook"
                 />
+            </div>
+
+            <div>
+                <label className="block text-xs font-semibold text-gray-500 uppercase mb-1.5 tracking-wider">Idempotency Key (Optional)</label>
+                <div className="relative">
+                    <Key className="w-3.5 h-3.5 absolute left-3 top-3 text-gray-400" />
+                    <input 
+                        type="text" 
+                        placeholder="e.g. req-unique-token"
+                        value={idempotencyKey}
+                        onChange={(e) => setIdempotencyKey(e.target.value)}
+                        className="w-full text-sm pl-9 p-2.5 border border-gray-200 rounded-lg font-mono text-gray-700 outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all"
+                    />
+                </div>
             </div>
             
             <div className="grid grid-cols-2 gap-4">
@@ -124,7 +139,7 @@ export default function WebhookPlayground({ onWebhookSent }: { onWebhookSent: ()
             <textarea 
                 value={payload}
                 onChange={(e) => setPayload(e.target.value)}
-                className="flex-1 w-full text-sm p-3 border border-gray-200 rounded-lg font-mono text-gray-700 bg-gray-50 focus:bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none resize-none min-h-[120px] transition-all"
+                className="flex-1 w-full text-sm p-3 border border-gray-200 rounded-lg font-mono text-gray-700 bg-gray-50 focus:bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none resize-none min-h-[140px] transition-all"
             />
             
             <button 
@@ -139,7 +154,7 @@ export default function WebhookPlayground({ onWebhookSent }: { onWebhookSent: ()
                 {loading ? <RefreshCw className="w-4 h-4 animate-spin" /> : 
                  status === 'success' ? <CheckCircle className="w-4 h-4" /> : 
                  status === 'error' ? <AlertCircle className="w-4 h-4" /> : 
-                 <Send className="w-4 h-4" />}
+                 <Send className="w-4 h-4 text-white" />}
                 
                 {loading ? "Ingesting..." : 
                  status === 'success' ? "Sent Successfully!" : 
