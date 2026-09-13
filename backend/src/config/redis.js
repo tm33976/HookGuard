@@ -3,27 +3,27 @@ const IORedis = require('ioredis');
 let redisConfig;
 
 if (process.env.REDIS_URL) {
-  // Production (Render + Upstash)
-  // We parse the URL ourselves to pass it as an object to BullMQ
-  // This is the safest way to ensure 'family: 4' is respected
   const connectionUrl = new URL(process.env.REDIS_URL);
+  const isTls = connectionUrl.protocol === 'rediss:';
 
   redisConfig = {
     host: connectionUrl.hostname,
-    port: connectionUrl.port,
-    username: connectionUrl.username,
-    password: connectionUrl.password,
+    port: Number(connectionUrl.port) || 6379,
+    username: connectionUrl.username || undefined,
+    password: connectionUrl.password || undefined,
     maxRetriesPerRequest: null, // Required by BullMQ
-    family: 4,                  // ⚠️ FORCE IPv4 to fix ETIMEDOUT on Render
-    tls: {
-      rejectUnauthorized: false // Accept Upstash self-signed certs
-    }
+    family: 4,                  // Force IPv4
+    ...(isTls && {
+      tls: {
+        rejectUnauthorized: false
+      }
+    })
   };
 } else {
   // Local Development
   redisConfig = {
     host: process.env.REDIS_HOST || 'localhost',
-    port: process.env.REDIS_PORT || 6379,
+    port: Number(process.env.REDIS_PORT) || 6379,
     maxRetriesPerRequest: null,
   };
 }
